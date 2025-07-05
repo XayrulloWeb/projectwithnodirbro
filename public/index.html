@@ -52,6 +52,29 @@
         .marker-default { background-color: var(--default-color); animation-name: pulse; --color: var(--default-color); }
         .marker-handled { background-color: var(--handled-color); animation: none; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* --- НОВЫЕ СТИЛИ ДЛЯ КНОПКИ --- */
+        .action-button {
+            width: 100%;
+            margin-top: 20px;
+            padding: 12px;
+            font-size: 15px;
+            font-weight: 500;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        .action-button:active {
+            transform: scale(0.98);
+        }
+        .action-button.danger {
+            background-color: var(--fire-color);
+            color: white;
+        }
+        .action-button.danger:hover {
+            background-color: #c0392b; /* Более темный красный при наведении */
+        }
     </style>
 </head>
 <body>
@@ -67,6 +90,8 @@
             <div class="stat-item"><h4 id="stat-tech">0</h4><p>Сбой</p></div>
             <div class="stat-item"><h4 id="stat-default">0</h4><p>Стандарт</p></div>
         </div>
+        <!-- НОВОЕ: Кнопка для очистки истории -->
+        <button id="clear-history-btn" class="action-button danger">Очистить историю</button>
     </div>
     <div class="sidebar-section" style="flex-grow: 1; display: flex; flex-direction: column; padding: 0;">
         <h3 style="padding: 20px 25px 10px;">Журнал Событий</h3>
@@ -88,7 +113,7 @@
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
     // --- Подключение к РЕАЛЬНОМУ серверу ---
-    const socket = io('instance-modelling-ic-railway.trycloudflare.com'); // !!! ЗАМЕНИ НА СВОЙ АКТУАЛЬНЫЙ АДРЕС !!!
+    const socket = io('http://localhost:3000');
 
     let activeSignals = [];
     const layers = {
@@ -97,41 +122,93 @@
     };
     Object.values(layers).forEach(layer => map.addLayer(layer));
 
-    // --- ГЛАВНАЯ ЛОГИКА: Слушаем реальные сигналы ---
+    // --- НОВОЕ: Логика кнопки очистки и сброса UI ---
+    const clearHistoryButton = document.getElementById('clear-history-btn');
+
+    clearHistoryButton.addEventListener('click', () => {
+        // Запрос подтверждения перед необратимым действием
+        if (confirm('Вы уверены, что хотите удалить ВСЮ историю сигналов? Это действие необратимо.')) {
+            console.log('[CLIENT] Отправка запроса на очистку истории...');
+            socket.emit('clear_history');
+        }
+    });
+
+    // Функция для полного сброса интерфейса
+    function resetUI() {
+        console.log("[CLIENT] Получена команда сброса. Очистка интерфейса...");
+        activeSignals = [];
+        Object.values(layers).forEach(layer => layer.clearLayers());
+        updateEventLog(); // Обновит лог (покажет "Ожидание сигналов...")
+        updateStats();    // Обновит статистику (установит все в 0)
+    }
+
+    // Слушаем событие от сервера, что история была очищена
+    socket.on('history_cleared', () => {
+        resetUI();
+    });
+    // --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
+
+    socket.on('load_history', (history) => {
+        console.log(`[CLIENT] ПОЛУЧЕНА ИСТОРИЯ: ${history.length} сигналов.`);
+        resetUI(); // Сначала все чистим, потом отрисовываем
+        history.forEach(signal => {
+            displaySignal(signal);
+        });
+
+        if (history.length > 0) {
+            const lastSignal = history[history.length - 1];
+            map.flyTo([lastSignal.lat, lastSignal.lon], 10);
+        }
+    });
+
     socket.on('new_signal', (data) => {
-        console.log("ПОЛУЧЕН РЕАЛЬНЫЙ СИГНАЛ:", data);
+        console.log("[CLIENT] ПОЛУЧЕН НОВЫЙ СИГНАЛ:", data);
         displaySignal(data);
         map.flyTo([data.lat, data.lon], 15);
     });
 
     function displaySignal(point) {
-        if (!point.id) point.id = point.button_id + Date.now();
-        point.timestamp = new Date();
-
+        point.timestamp = new Date(point.timestamp);
         const marker = L.marker([point.lat, point.lon], { icon: createMarkerIcon(point) });
         marker.bindPopup(`<b>${point.name}</b><br>Тип: ${point.type}<br>ID: ${point.button_id}`);
 
         const targetLayer = layers[point.type] || layers.default;
         targetLayer.addLayer(marker);
-
         point.marker = marker;
-        activeSignals.push(point);
-        updateEventLog(point);
+
+        if (!activeSignals.some(s => s.id === point.id)) {
+            activeSignals.push(point);
+        }
+
+        updateEventLog();
         updateStats();
     }
 
-    function createMarkerIcon(point) { /* ... код без изменений ... */ let markerClass, iconContent; if (point.handled) { markerClass = 'marker-handled'; iconContent = '✅'; } else { switch (point.type) { case 'sos': markerClass = 'marker-sos'; iconContent = '🆘'; break; case 'robbery': markerClass = 'marker-robbery'; iconContent = '💰'; break; case 'fire': markerClass = 'marker-fire'; iconContent = '🚨'; break; case 'tech': markerClass = 'marker-tech'; iconContent = '⚙️'; break; default: markerClass = 'marker-default'; iconContent = '📡'; } } return L.divIcon({ html: `<div class="live-marker ${markerClass}">${iconContent}</div>`, className: '', iconSize: [32, 32], iconAnchor: [16, 16] }); }
-    function updateEventLog(point) {
+    function createMarkerIcon(point) { let markerClass, iconContent; if (point.handled) { markerClass = 'marker-handled'; iconContent = '✅'; } else { switch (point.type) { case 'sos': markerClass = 'marker-sos'; iconContent = '🆘'; break; case 'robbery': markerClass = 'marker-robbery'; iconContent = '💰'; break; case 'fire': markerClass = 'marker-fire'; iconContent = '🚨'; break; case 'tech': markerClass = 'marker-tech'; iconContent = '⚙️'; break; default: markerClass = 'marker-default'; iconContent = '📡'; } } return L.divIcon({ html: `<div class="live-marker ${markerClass}">${iconContent}</div>`, className: '', iconSize: [32, 32], iconAnchor: [16, 16] }); }
+
+    function updateEventLog() {
         const logContainer = document.getElementById('event-log-container');
-        if (logContainer.innerText.includes('Ожидание')) logContainer.innerHTML = '';
-        const entry = document.createElement('div');
-        entry.className = 'log-entry';
-        entry.innerHTML = `<div class="log-title">${point.name}</div><div class="log-details">${point.type} - ${point.timestamp.toLocaleTimeString()}</div>`;
-        entry.onclick = () => { map.flyTo([point.lat, point.lon], 15); point.marker.openPopup(); };
-        entry.onmouseenter = () => point.marker.setZIndexOffset(1000); // Выделяем маркер
-        entry.onmouseleave = () => point.marker.setZIndexOffset(0);
-        logContainer.prepend(entry);
+        logContainer.innerHTML = '';
+
+        if (activeSignals.length === 0) {
+            logContainer.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding-top: 50px;">Ожидание сигналов...</div>';
+            return;
+        }
+
+        const sortedSignals = [...activeSignals].sort((a, b) => b.timestamp - a.timestamp);
+
+        sortedSignals.forEach(point => {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<div class="log-title">${point.name}</div><div class="log-details">${point.type.toUpperCase()} - ${point.timestamp.toLocaleTimeString('ru-RU')}, ${point.timestamp.toLocaleDateString('ru-RU')}</div>`;
+            entry.onclick = () => { map.flyTo([point.lat, point.lon], 15); point.marker.openPopup(); };
+            entry.onmouseenter = () => point.marker.setZIndexOffset(1000);
+            entry.onmouseleave = () => point.marker.setZIndexOffset(0);
+            logContainer.appendChild(entry);
+        });
     }
+
     function updateStats() { document.getElementById('stat-total').innerText = activeSignals.length; document.getElementById('stat-sos').innerText = activeSignals.filter(p => p.type === 'sos').length; document.getElementById('stat-robbery').innerText = activeSignals.filter(p => p.type === 'robbery').length; document.getElementById('stat-fire').innerText = activeSignals.filter(p => p.type === 'fire').length; document.getElementById('stat-tech').innerText = activeSignals.filter(p => p.type === 'tech').length; document.getElementById('stat-default').innerText = activeSignals.filter(p => p.type === 'default').length; }
 </script>
 </body>
